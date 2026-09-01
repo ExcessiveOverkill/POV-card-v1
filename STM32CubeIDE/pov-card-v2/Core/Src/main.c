@@ -171,6 +171,9 @@ typedef struct {
 
 typedef struct{
 	uint8_t startup_mode;
+	int32_t accel_x_zero;
+	int32_t accel_y_zero;
+	uint8_t first_run;
 	Image_Metadata user_images[2];
 
 } Nv_Metadata;
@@ -374,6 +377,61 @@ void nvm_load_metadata(void) {
 }
 
 
+void enter_USB_bootloader(void)
+{
+	FLASH_OBProgramInitTypeDef ob = {0};
+
+	HAL_FLASH_Unlock();
+	HAL_FLASH_OB_Unlock();
+
+	HAL_FLASHEx_OBGetConfig(&ob);
+
+	ob.OptionType = OPTIONBYTE_USER;
+	ob.USERType   = OB_USER_NBOOT_SEL | OB_USER_NBOOT0 | OB_USER_NBOOT1 | OB_USER_BOR_LEV; // BOOT_LOCK not in USERType on C0 HAL, cleared via FLASH_SECR below
+	ob.USERConfig = (ob.USERConfig & ~(FLASH_OPTR_nBOOT_SEL | FLASH_OPTR_nBOOT0 |
+										FLASH_OPTR_nBOOT1))
+					| FLASH_OPTR_nBOOT_SEL | FLASH_OPTR_nBOOT1;   // nBOOT0=0, nBOOT_SEL=1, nBOOT1=1
+
+	HAL_FLASHEx_OBProgram(&ob);
+
+	CLEAR_BIT(FLASH->SECR, FLASH_SECR_BOOT_LOCK);   // BOOT_LOCK=0, separate register on C0
+
+	HAL_FLASH_OB_Lock();
+	HAL_FLASH_Lock();
+
+	HAL_FLASH_OB_Launch();
+}
+
+#define NUM_LEDS   32
+#define MAX_BRIGHT 15
+
+void set_led_brightness(int32_t value, uint8_t leds[NUM_LEDS], const int32_t in_min, const int32_t in_max) {
+    if (value < in_min) value = in_min;
+    if (value > in_max) value = in_max;
+
+    memset(leds, 0, NUM_LEDS);
+
+    int32_t offset = value - in_min;      // 0 .. 4096
+	int32_t range  = in_max - in_min;     // 4096
+
+	int64_t pos_fp = ((int64_t)offset * (NUM_LEDS - 1) << 16) / range; // 16.16 fixed
+
+	int32_t led_low = (int32_t)(pos_fp >> 16);
+	int32_t frac    = (int32_t)(pos_fp & 0xFFFF);        // 0 .. 65535
+
+	if (led_low >= NUM_LEDS - 1) {
+		leds[NUM_LEDS - 1] = MAX_BRIGHT;
+		return;
+	}
+
+	int32_t bright_high = (frac * MAX_BRIGHT + 32768) / 65536; // round, not truncate
+	int32_t bright_low  = MAX_BRIGHT - bright_high;
+
+	leds[led_low]     = (uint8_t)bright_low;
+	leds[led_low + 1] = (uint8_t)bright_high;
+}
+
+
 /* USER CODE END 0 */
 
 /**
@@ -469,6 +527,12 @@ static int8_t consecutive_taps = 0;
 
 static uint8_t save_mode_enable = 0;
 
+static uint8_t level_cal_mode_enable = 0;
+static uint8_t x_cal_done = 1;
+static uint8_t y_cal_done = 1;
+
+static uint8_t save_metadata = 0;
+
 
   memcpy(blank_ccr, default_blank_ccr, sizeof(blank_ccr));
 
@@ -531,11 +595,14 @@ static uint8_t save_mode_enable = 0;
 	LEVEL,
 	BALL_SIM,
 	SAVE_MODE,
+	LEVEL_CAL,
 	RESET,
+	USB_DFU,
 	X_VEL_ESTIMATE,
 	X_POS_ESTIMATE,
 	IMAGE_LINE_DISPLAY,
 	POWER_OFF,
+	INITIAL_SETUP_CAL,
 	END
   } led_mode = START_UP;
 
@@ -545,6 +612,7 @@ static uint8_t save_mode_enable = 0;
 	  MODE_LEVEL,
 	  MODE_BALL_SIM,
 	  MODE_SAVE_MODE,
+	  MODE_LEVEL_CAL,
 	  MODE_RESET,
 	  MODE_IMAGE_LINE_DISPLAY,
 	  MODE_ACCEL_X_RAW_DISPLAY,
@@ -552,6 +620,7 @@ static uint8_t save_mode_enable = 0;
 	  MODE_ACCEL_Z_RAW_DISPLAY,
 	  MODE_LED_DYNAMIC_DIM_DISPLAY,
 	  MODE_LED_DYNAMIC_DISPLAY,
+	  MODE_USB_DFU,
 	  MODE_END
 
   }	mode = 0;
@@ -561,6 +630,11 @@ static uint8_t save_mode_enable = 0;
   // reset nvm metadata if it is not initialized
   if(saved_metadata.user_images[0].mode == 255 || saved_metadata.user_images[1].mode == 255){
 	  led_mode = RESET;
+  }
+
+  // run setup and calibration on first program
+  if(saved_metadata.first_run != 0){
+	  led_mode = INITIAL_SETUP_CAL;
   }
 
 
@@ -594,7 +668,7 @@ static uint8_t save_mode_enable = 0;
   enum Mode last_mode = MODE_POV_DISPLAY_BOTH;
 
   // use saved mode for default
-  if(saved_metadata.startup_mode >= 0 && saved_metadata.startup_mode < MODE_END){
+  if(saved_metadata.startup_mode < MODE_END){
 	  mode = saved_metadata.startup_mode;
   }
 
@@ -788,6 +862,10 @@ static uint8_t save_mode_enable = 0;
 
 					  if(save_mode_enable){
 						  saved_metadata.startup_mode = last_mode;
+						  save_metadata = 1;
+					  }
+
+					  if(save_metadata){
 						  if(update_metadata() && led_mode != FLASH_ERROR){
 							  led_mode = FLASH_ERROR;
 							  continue;
@@ -858,7 +936,7 @@ static uint8_t save_mode_enable = 0;
 				  	  case MODE_LEVEL:
 				  		  memcpy(letters, "LEVEL", 5);
 				  		  next_mode = LEVEL;
-				  		  next_blank_ccr = default_blank_ccr;
+				  		  next_blank_ccr = ball_blank_ccr;
 					  break;
 				  	  case MODE_BALL_SIM:
 				  		  memcpy(letters, "BALL", 4);
@@ -877,6 +955,19 @@ static uint8_t save_mode_enable = 0;
 				  		  }
 				  		  next_mode = SAVE_MODE;
 				  		  next_blank_ccr = default_blank_ccr;
+					  break;
+				  	  case MODE_LEVEL_CAL:
+				  		  memcpy(letters, "LEVEL", 5);
+				  		  memcpy(letters+12, "CAL", 3);
+				  		  if(level_cal_mode_enable){
+							  memcpy(letters+24, "ON", 2);
+						  }
+						  else{
+							verify_bar_target = 8;
+						  }
+				  		  next_mode = LEVEL_CAL;
+				  		  next_blank_ccr = ball_blank_ccr;
+				  		  verify_bar_target = 8;
 					  break;
 				  	  case MODE_RESET:
 						  memcpy(letters, "RESET", 5);
@@ -926,6 +1017,14 @@ static uint8_t save_mode_enable = 0;
 						  next_mode = LED_DYNAMIC_DISPLAY;
 						  next_blank_ccr = default_blank_ccr;
 				  	  break;
+				  	  case MODE_USB_DFU:
+				  		  memcpy(letters, "USB", 3);
+				  		  memcpy(letters+12, "UPDATE", 6);
+				  		memcpy(letters+24, "DANGER", 6);
+						  next_mode = USB_DFU;
+						  next_blank_ccr = default_blank_ccr;
+						  verify_bar_target = 8;
+					  break;
 				  	  case MODE_END:
 					  break;
 				  }
@@ -1011,7 +1110,8 @@ static uint8_t save_mode_enable = 0;
 				  verify_bar = 0;
 			  }
 
-			  if(mode == MODE_SAVE_MODE || mode == MODE_RESET){
+			  // modes that require verification
+			  if(mode == MODE_SAVE_MODE || mode == MODE_RESET || mode == MODE_USB_DFU || mode == MODE_LEVEL_CAL){
 				  first_cycle = 0;
 				  if(tick > verify_step_time){
 					  verify_step_time = tick + verify_step_delay;
@@ -1364,47 +1464,108 @@ static uint8_t save_mode_enable = 0;
     	  memset(brightness, 15, 32);	// all on
     	  break;
 
+      case LEVEL_CAL:
+    	  level_cal_mode_enable = 1;
+    	  x_cal_done = 0;
+    	  y_cal_done = 0;
+    	  led_mode = LEVEL;
+    	  break;
+
       case LEVEL:
       	  {
-      		  static int8_t tilt[128];
-      		  static uint8_t tilt_idx = 0;
-      		  static int8_t last_tilt = 0;
-      		  if(abs(avg_x_accel) > abs(avg_y_accel)){
-      			  // assume x is the vertical axis
-      			  tilt[tilt_idx] = avg_y_accel >> (ACCEL_AVG_SHIFT+4);
-      		  }
-      		  else{
-      			  // assume y is the vertical axis
-      			tilt[tilt_idx] = avg_x_accel >> (ACCEL_AVG_SHIFT+4);
-      		  }
 
-      		  int32_t sum = 0;
-      		  for(uint8_t i = 0; i < 128; i++){
-      			  sum += (int32_t)tilt[i];
-      		  }
+			static int16_t tilt[128];
+			static uint8_t tilt_idx = 0;
+			static int16_t last_tilt = 0;
+			uint8_t x_active = 0;
+			if(abs(avg_x_accel) > abs(avg_y_accel)){
+			  // assume x is the vertical axis
+			  tilt[tilt_idx] = avg_y_accel >> (ACCEL_AVG_SHIFT);
+			}
+			else{
+			  // assume y is the vertical axis
+			  tilt[tilt_idx] = avg_x_accel >> (ACCEL_AVG_SHIFT);
+			  x_active = 1;
+			}
 
-      		  tilt_idx++;
-      		  if(tilt_idx == 128){
-      			  tilt_idx = 0;
-      		  }
-      		  sum = sum / 128;
-      		  if(sum > 15) sum = 15;
-      		  if(sum < -15) sum = -15;
+			int32_t sum = 0;
+			for(uint8_t i = 0; i < 128; i++){
+			  sum += (int32_t)tilt[i];
+			}
 
-      		  if(abs(sum - last_tilt) > 2){
-      			  last_active_tick = tick;	// keep awake while level is moving
-      			  last_tilt = sum;
-      		  }
+			tilt_idx++;
+			if(tilt_idx == 128){
+			  tilt_idx = 0;
+			}
+
+			memset(brightness, 0, 32);	// all off
+
+			// calibration mode
+			if(level_cal_mode_enable){
+				if((tick > last_active_tick + 3e6) && (sum > -15*128) && (sum < 15*128)){	// stable for 3 seconds and near expected zero
+					memset(brightness, 1, 32);	// all dim
+					if(x_active && (x_cal_done == 0)){
+						x_cal_done = 1;
+						saved_metadata.accel_x_zero = sum;
+
+					}
+					if((x_active == 0) && (y_cal_done == 0)){
+						y_cal_done = 1;
+						saved_metadata.accel_y_zero = sum;
+
+					}
+					if(x_cal_done && y_cal_done){
+						level_cal_mode_enable = 0;
+						save_metadata = 1;	// save to flash at power off
+					}
+				}
+			}
 
 
+			if(x_active && x_cal_done){
+				sum = sum - saved_metadata.accel_x_zero;
+			}
+			if((x_active == 0) && y_cal_done){
+				sum = sum - saved_metadata.accel_y_zero;
+			}
 
-      		  memset(brightness, 0, 32);	// all off
 
-      		  brightness[15-3] = 2;
-      		  brightness[16+3] = 2;
+			set_led_brightness(sum, brightness, -2048*16, 2048*16);
 
-      		brightness[sum+15] = 5;
-			brightness[sum+16] = 5;
+//			if (sum < -2048) sum = -2048;
+//			if (sum >  2048) sum =  2048;
+//
+//			uint32_t offset  = (uint32_t)(sum + 2048);   /* 0 .. 4096        */
+//			uint16_t led_pos = (uint16_t)(offset >> 3);     /* 0 .. 512, clean  */
+//			if (led_pos > 511) led_pos = 511;               /* clamp the top edge */
+//
+////			memset(brightness, 0, NUM_LEDS);
+//
+//			uint8_t idx  = (uint8_t)(led_pos >> 4);   /* 0 – 31 */
+//			uint8_t frac = (uint8_t)(led_pos & 0xF);  /* 0 – 15 */
+//
+//			brightness[idx] = 15 - frac;
+//			if (frac && idx < 31)
+//				brightness[idx + 1] = frac;
+
+
+			sum = sum / 128;
+
+
+			if(sum > 15) sum = 15;
+			if(sum < -15) sum = -15;
+
+			if(abs(sum - last_tilt) > 2){
+			  last_active_tick = tick;	// keep awake while level is moving
+			  last_tilt = sum;
+			}
+
+
+//			brightness[15-3] = 2;
+//			brightness[16+3] = 2;
+
+//			brightness[sum+15] = 5;
+//			brightness[sum+16] = 5;
 
       	  }
     	  break;
@@ -1418,7 +1579,8 @@ static uint8_t save_mode_enable = 0;
 
       case RESET:
       	  {
-      		// clear metadata
+      		// clear metadata except for accel calibration
+      		saved_metadata.first_run = 0;
       		saved_metadata.startup_mode = 0;
       		Image_Metadata blank_image_metadata;
       		blank_image_metadata.cycle_count = 0;
@@ -1455,6 +1617,58 @@ static uint8_t save_mode_enable = 0;
 			update_metadata();
       	  }
       	  break;
+
+      case USB_DFU:
+		  {
+			  ux_device_stack_disconnect();          // soft-disconnect, host sees device drop
+			  memset(brightness, 2, 32);	// all dim
+//			  HAL_Delay(5);                          // let any pending ACK/status stage flush
+//			  HAL_PCD_Stop(&hpcd_USB_DRD_FS);
+//			  HAL_PCD_DeInit(&hpcd_USB_DRD_FS);
+
+			  led_mode = POWER_OFF;
+
+			  enter_USB_bootloader();
+		  }
+		  break;
+
+      case INITIAL_SETUP_CAL:
+		  {
+			  static int8_t xtilt[128];
+			  static int8_t ytilt[128];
+			  static uint8_t tilt_idx = 0;
+			  static uint8_t cal_cycles = 0;
+
+			  ytilt[tilt_idx] = avg_y_accel >> (ACCEL_AVG_SHIFT+4);
+			  xtilt[tilt_idx] = avg_x_accel >> (ACCEL_AVG_SHIFT+4);
+
+			  tilt_idx++;
+			  if(tilt_idx == 128){
+				  tilt_idx = 0;
+				  cal_cycles++;
+			  }
+
+			  if(cal_cycles == 200){
+				  int32_t xsum = 0;
+				  int32_t ysum = 0;
+				  for(uint8_t i = 0; i < 128; i++){
+					  xsum += (int32_t)xtilt[i];
+					  ysum += (int32_t)ytilt[i];
+				  }
+
+				  saved_metadata.accel_x_zero = xsum;
+				  saved_metadata.accel_y_zero = ysum;
+
+				  save_metadata = 1;	// save to flash at power off
+
+				  led_mode = RESET;
+
+			  }
+
+			  memset(brightness, 2, 32);	// all dim
+
+		  }
+		  break;
     }
 
 
