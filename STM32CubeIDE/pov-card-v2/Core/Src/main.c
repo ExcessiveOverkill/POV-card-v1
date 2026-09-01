@@ -26,9 +26,7 @@
 #include "ux_device_msc.h"
 #include "pov_bmp.h"
 #include "pov_frame.h"
-#include "display.h"
 #include <stdlib.h>
-//#include "pov_imu.c"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -78,10 +76,6 @@ extern volatile uint32_t g_bmp_ram_sector;
 extern volatile uint32_t g_bmp_ram_size;
 
 extern uint32_t _suser_image_data;
-
-#define NVM_USER_DATA_ADDR  ((uint32_t)&_suser_image_data)
-#define NVM_PAGE_SIZE  (2048U)
-#define NVM_IMG_DATA_PAGES (2U)
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -502,8 +496,6 @@ uint32_t min_cycle_accel_time = 0;
 uint32_t estimated_next_edge_time = 0;	// when we think we will be at the end of the shake motion again
 uint32_t frame_trigger_time = 0xFFFFFFFF;
 
-uint32_t random_points = 0;
-int32_t image_length = 0;
 int32_t frame_length = 0;
 
 uint32_t current_frame_cycle = 0;
@@ -514,9 +506,6 @@ uint32_t current_frame = 0;
 int32_t avg_x_accel = 0;
 int32_t avg_y_accel = 0;
 int32_t avg_z_accel = 0;
-
-int32_t x_pos_estimate = 0;
-int32_t x_vel_estimate = 0;
 
 const int16_t tap_threshold = 8000;
 const uint32_t debounce_time = 50e3;
@@ -598,8 +587,6 @@ static uint8_t save_metadata = 0;
 	LEVEL_CAL,
 	RESET,
 	USB_DFU,
-	X_VEL_ESTIMATE,
-	X_POS_ESTIMATE,
 	IMAGE_LINE_DISPLAY,
 	POWER_OFF,
 	INITIAL_SETUP_CAL,
@@ -657,8 +644,6 @@ static uint8_t save_metadata = 0;
 
   uint32_t next_increment_tick = 0;
 
-//  TIM1->CCR2 = 128;
-
   BCM_BuildFrame(brightness);
 
   // start led DMA update
@@ -683,7 +668,6 @@ static uint8_t save_metadata = 0;
 
 	if(new_accel_data){
 		new_accel_data = 0;
-//		accel_update_period = tick - accel_last_update_time;
 
 		if(x_accel_magnitude_average > LED_ENABLE_ACCELERATION){
 			if(x_accel_previous < 0 && x_accel >= 0){	// transitioned from negative to positive acceleration
@@ -733,8 +717,6 @@ static uint8_t save_metadata = 0;
 		avg_y_accel += (int32_t)accel_y_raw - (avg_y_accel >> ACCEL_AVG_SHIFT);
 		avg_z_accel += (int32_t)accel_z_raw - (avg_z_accel >> ACCEL_AVG_SHIFT);
 
-//		pov_imu_update(accel_x_raw, accel_y_raw, accel_z_raw, &x_vel_estimate, &x_pos_estimate);	// TODO: figure out position estimation
-
 		tap_accel = accel_y_raw - (avg_y_accel >> ACCEL_AVG_SHIFT);
 
 		if(((abs(tap_accel) > tap_threshold) &&  (tick > (last_tap_time + debounce_time)))){
@@ -782,11 +764,7 @@ static uint8_t save_metadata = 0;
 	x_accel_interpolated = x_accel_previous * (int32_t)accel_update_period + (x_accel / (int32_t)(tick-accel_last_update_time));
 	x_accel_interpolated /= (int32_t)accel_update_period;
 
-//	x_accel_interpolated = x_accel;
-
-
 	// find line of image to display based on current acceleration and image length
-//	image_line =  ((x_accel_interpolated + max_dynamic_accel/2) / (max_dynamic_accel / frame_length)) + current_frame * frame_length;
 	image_line =  ((x_accel_interpolated + max_dynamic_accel/2) / (max_dynamic_accel / frame_length));
 
     switch (led_mode) {
@@ -1179,8 +1157,6 @@ static uint8_t save_metadata = 0;
       	  }
       	  break;
 
-      case X_VEL_ESTIMATE:
-      case X_POS_ESTIMATE:
       case ACCEL_X_RAW_DISPLAY:
       case ACCEL_Y_RAW_DISPLAY:
       case ACCEL_Z_RAW_DISPLAY:
@@ -1195,12 +1171,6 @@ static uint8_t save_metadata = 0;
       		  }
       		  else if(led_mode == ACCEL_Z_RAW_DISPLAY){
       			  led_bar = accel_z_raw / 2048;
-			  }
-      		  else if(led_mode == X_VEL_ESTIMATE){
-				  led_bar = x_vel_estimate >> 18;
-      		  }
-      		  else if(led_mode == X_POS_ESTIMATE){
-				  led_bar = x_pos_estimate >> 16;
 			  }
 
       		  memset(brightness, 0, 32);
@@ -1277,8 +1247,6 @@ static uint8_t save_metadata = 0;
     	  static uint8_t image_index = 0;
     	  static uint8_t image_cycles = 0;
     	  static uint16_t frame_start_offset = 0;
-
-//    	  image_index = 0;	// locked for testing
 
     	  switch(image_index){
 			  case 0:
@@ -1532,22 +1500,6 @@ static uint8_t save_metadata = 0;
 
 			set_led_brightness(sum, brightness, -2048*16, 2048*16);
 
-//			if (sum < -2048) sum = -2048;
-//			if (sum >  2048) sum =  2048;
-//
-//			uint32_t offset  = (uint32_t)(sum + 2048);   /* 0 .. 4096        */
-//			uint16_t led_pos = (uint16_t)(offset >> 3);     /* 0 .. 512, clean  */
-//			if (led_pos > 511) led_pos = 511;               /* clamp the top edge */
-//
-////			memset(brightness, 0, NUM_LEDS);
-//
-//			uint8_t idx  = (uint8_t)(led_pos >> 4);   /* 0 – 31 */
-//			uint8_t frac = (uint8_t)(led_pos & 0xF);  /* 0 – 15 */
-//
-//			brightness[idx] = 15 - frac;
-//			if (frac && idx < 31)
-//				brightness[idx + 1] = frac;
-
 
 			sum = sum / 128;
 
@@ -1559,13 +1511,6 @@ static uint8_t save_metadata = 0;
 			  last_active_tick = tick;	// keep awake while level is moving
 			  last_tilt = sum;
 			}
-
-
-//			brightness[15-3] = 2;
-//			brightness[16+3] = 2;
-
-//			brightness[sum+15] = 5;
-//			brightness[sum+16] = 5;
 
       	  }
     	  break;
@@ -1674,9 +1619,6 @@ static uint8_t save_metadata = 0;
 
     // reset animation variables when card is no longer being shaken
     if(x_accel_magnitude_average < LED_ENABLE_ACCELERATION){
-//		image_length = 0;
-//		frame_length = 0;
-//		frame_display_cycles = normal_frame_cycles[0];
 		current_frame = 0;	// reset frame counter so we start at first frame of animation
 	}
 
