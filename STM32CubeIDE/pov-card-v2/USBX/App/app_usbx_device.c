@@ -292,7 +292,11 @@ static UINT USBD_ChangeFunction(ULONG Device_State)
     case UX_DEVICE_ATTACHED:
 
       /* USER CODE BEGIN UX_DEVICE_ATTACHED */
+      /* Fires on every bus reset (start of enumeration). With
+         vbus_sensing_enable=DISABLE, HAL_PCD_ConnectCallback never runs, so
+         UX_DCD_STM32_DEVICE_CONNECTED is dead -- this is our connect signal. */
       g_usb_diag_events |= (1U << 0);
+      g_usb_connected = 1U;
       /* USER CODE END UX_DEVICE_ATTACHED */
 
       break;
@@ -301,6 +305,7 @@ static UINT USBD_ChangeFunction(ULONG Device_State)
 
       /* USER CODE BEGIN UX_DEVICE_REMOVED */
       g_usb_diag_events |= (1U << 1);
+      g_usb_connected = 0U;
       /* USER CODE END UX_DEVICE_REMOVED */
 
       break;
@@ -342,6 +347,7 @@ static UINT USBD_ChangeFunction(ULONG Device_State)
 
       /* USER CODE BEGIN UX_DCD_STM32_DEVICE_RESUMED */
       g_usb_diag_events |= (1U << 5);
+      g_usb_connected = 1U;    /* host came back after a suspend */
       /* USER CODE END UX_DCD_STM32_DEVICE_RESUMED */
 
       break;

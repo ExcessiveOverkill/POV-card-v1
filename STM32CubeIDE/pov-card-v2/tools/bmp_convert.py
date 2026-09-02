@@ -66,11 +66,14 @@ def encode_column_1bit(pixels, x, h):
 
 
 def encode_column_4bit(pixels, x, h):
-    """Pack 2 pixels per byte, top pixel in high nibble, going top-to-bottom."""
+    """Pack 2 pixels per byte into h/2 bytes. Vertically flipped to match
+    encode_column_1bit: low nibble of byte 0 = bottom row of the image."""
     col = []
-    for y in range(0, h, 2):
-        lo = round(pixels[x, y] * 15 / 255) & 0x0F
-        hi = round(pixels[x, y + 1] * 15 / 255) & 0x0F if y + 1 < h else 0
+    for byte_i in range(h // 2):
+        lo_row = h - 1 - (byte_i * 2)
+        hi_row = h - 1 - (byte_i * 2 + 1)
+        lo = round(pixels[x, lo_row] * 15 / 255) & 0x0F
+        hi = round(pixels[x, hi_row] * 15 / 255) & 0x0F if hi_row >= 0 else 0
         col.append((hi << 4) | lo)
     return col
 

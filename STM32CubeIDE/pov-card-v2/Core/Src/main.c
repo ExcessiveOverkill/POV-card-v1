@@ -24,8 +24,9 @@
 /* USER CODE BEGIN Includes */
 #include "math.h"
 #include "ux_device_msc.h"
+#include "pov_image.h"
 #include "pov_bmp.h"
-#include "pov_frame.h"
+#include "pov_user_image.h"
 #include <stdlib.h>
 /* USER CODE END Includes */
 
@@ -65,11 +66,12 @@ DMA_HandleTypeDef hdma_tim1_up;
 PCD_HandleTypeDef hpcd_USB_DRD_FS;
 
 /* USER CODE BEGIN PV */
-static uint8_t s_frame_buf[POV_FRAME_SIZE];
+static uint8_t s_img_buf[POV_USER_IMAGE_SLOT_BYTES];
 static uint8_t s_usb_ready = 0U;
 extern volatile uint8_t  g_usb_connected;
 extern volatile uint8_t  g_bmp_pending;
 extern volatile uint8_t  g_bmp_frame_idx;
+extern volatile uint8_t  g_bmp_is_sequence;
 extern volatile uint8_t  g_bmp_fill_level;
 extern volatile uint8_t  g_usb_led_state;
 extern volatile uint32_t g_bmp_ram_sector;
@@ -141,36 +143,7 @@ static int32_t last_accel_z_raw = 0;
 
 static uint32_t plane[16];
 
-typedef enum {
-	NONE = 0,
-	ONE_BIT,
-	FOUR_BIT,
-	FOUR_BIT_FANCY
-} Image_Display_Mode;
-
-typedef struct {
-	uint8_t display_cycles;
-	uint8_t cycle_count;
-	uint8_t column_height;
-	uint8_t max_frame_columns;
-	uint8_t frame_columns[128];
-	uint8_t frame_count;
-
-	Image_Display_Mode mode;
-
-	uint8_t* image_data;	// points to start of image data in flash
-	uint16_t image_data_length;
-
-} Image_Metadata;
-
-typedef struct{
-	uint8_t startup_mode;
-	int32_t accel_x_zero;
-	int32_t accel_y_zero;
-	uint8_t first_run;
-	Image_Metadata user_images[2];
-
-} Nv_Metadata;
+/* Image_Display_Mode / Image_Metadata / Nv_Metadata now live in pov_image.h */
 
 __attribute__((section(".eo_image_data")))
 #include "eo_image_data.h"
@@ -181,6 +154,7 @@ extern const Nv_Metadata _smeta_data;
 static Nv_Metadata saved_metadata;
 
 static uint16_t blank_ccr[16];
+static uint16_t prev_blank_ccr[16];   // active curve saved while USB status is shown
 
 static const uint16_t default_blank_ccr[16] = {
 	128-1,
@@ -218,6 +192,28 @@ static const uint16_t ball_blank_ccr[16] = {
 	128-6,
 	128-6,
 	128-6,
+};
+
+/* Curve used only while the USB host is connected (status pulse / fill bar /
+   success / error). Smoother ramp than default so the low-brightness pulse is
+   actually visible; tune the 16 values to taste. */
+static const uint16_t usb_blank_ccr[16] = {
+	128-1,
+	128-1,
+	128-1,
+	128-1,
+	128-1,
+	128-2,
+	128-2,
+	128-2,
+	128-4,
+	128-4,
+	128-4,
+	128-4,
+	128-4,
+	128-4,
+	128-4,
+	128-4,
 };
 
 void EXTI0_1_IRQHandler(void)
@@ -650,6 +646,7 @@ static uint8_t save_metadata = 0;
   LED_Start();
 
   enum Led_Mode default_led_mode = MODE_SELECT;
+  enum Led_Mode prev_led_mode = MODE_SELECT;   // mode to restore when USB unplugs
   enum Mode last_mode = MODE_POV_DISPLAY_BOTH;
 
   // use saved mode for default
@@ -767,10 +764,125 @@ static uint8_t save_metadata = 0;
 	// find line of image to display based on current acceleration and image length
 	image_line =  ((x_accel_interpolated + max_dynamic_accel/2) / (max_dynamic_accel / frame_length));
 
+	/* The LEDs show USB status instead of the normal mode while a host is
+	   connected OR an upload is actively being processed (g_usb_led_state >= 2),
+	   using their own blank_ccr brightness curve. On exit we restore the mode
+	   and curve that were active before. ERROR_USB (USBX init failure) is a
+	   separate permanent state and is not part of this.
+
+	   `shown` is the status actually on screen; each PROGRAMMING/SUCCESS/ERROR
+	   gets a minimum on-screen hold so quick uploads don't flash past. */
+	{
+		static const uint32_t PROG_HOLD = 500000U;	// >= 0.5 s "writing"
+		static const uint32_t OK_HOLD   = 500000U;	// 0.5 s "done"
+		static const uint32_t ERR_HOLD  = 3500000U;	// 3.5 s "error"
+
+		static uint8_t  usb_status_active = 0;
+		static uint8_t  shown = 0;			// 0/1 idle-ready, 2 prog, 3 ok, 4 err
+		static uint32_t shown_until = 0;
+
+		uint8_t want_status = (g_usb_connected || g_usb_led_state >= 2U);
+
+		if(!usb_status_active){
+			if(want_status && led_mode != USB_DFU && led_mode != ERROR_USB){
+				usb_status_active = 1;
+				prev_led_mode = led_mode;
+				memcpy(prev_blank_ccr, blank_ccr, sizeof(blank_ccr));
+				memcpy(blank_ccr, usb_blank_ccr, sizeof(blank_ccr));
+				shown = 0;
+				shown_until = 0;
+			}
+		}
+		else if(want_status || tick < shown_until){
+			if(g_usb_connected) last_active_tick = tick;	// don't sleep while plugged in
+
+			/* Adopt a new status only once the current one has had its hold. */
+			if(g_usb_led_state != shown && tick >= shown_until){
+				shown = g_usb_led_state;
+				shown_until = tick + (shown == 2U ? PROG_HOLD :
+				                      shown == 3U ? OK_HOLD   :
+				                      shown == 4U ? ERR_HOLD  : 0U);
+			}
+			/* A finished SUCCESS/ERROR drops back to ready once its hold ends. */
+			if(shown >= 3U && tick >= shown_until){
+				shown = 1U;
+				g_usb_led_state = 1U;
+			}
+
+			switch(shown){
+				case 2:  led_mode = PROGRAMMING; break;
+				case 3:  led_mode = SUCCESS;     break;
+				case 4:  led_mode = ERROR_BMP;   break;
+				default: led_mode = USB_READY;   break;	// 0 (idle) or 1 (ready)
+			}
+		}
+		else{	// USB gone and no status hold pending -> restore
+			usb_status_active = 0;
+			shown = 0;
+			shown_until = 0;
+			led_mode = prev_led_mode;
+			g_usb_led_state = 0;
+			memcpy(blank_ccr, prev_blank_ccr, sizeof(blank_ccr));
+		}
+	}
+
     switch (led_mode) {
       default:
       case OFF:
     	  memset(brightness, 0, 32);	// all off
+    	  break;
+
+      case USB_READY:
+      	  {
+      		  static uint8_t lvl = 0;
+      		  static int8_t  dir = 1;
+      		  if(tick > next_increment_tick){
+      			  next_increment_tick = tick + 100000;	// 100 ms
+      			  lvl = (uint8_t)(lvl + dir);
+      			  if(lvl >= 16) dir = -1;
+      			  else if(lvl == 0) dir = 1;
+      		  }
+      		  memset(brightness, lvl, 32);
+      	  }
+    	  break;
+
+      case PROGRAMMING:
+      	  {
+      		  /* Fill bar ramps toward g_bmp_fill_level, at most 1 LED per 10 ms.
+      		     Min on-screen hold for the whole state is done by the USB block. */
+      		  static uint8_t  disp = 0;
+      		  static uint8_t  prev_target = 0;
+      		  static uint32_t next_step = 0;
+
+      		  uint8_t target = g_bmp_fill_level;
+      		  if(target > 32U) target = 32U;
+      		  if(target < prev_target) disp = 0;	// fill_level reset -> new upload
+      		  prev_target = target;
+
+      		  if(disp < target && tick >= next_step){
+      			  disp++;
+      			  next_step = tick + 15000;		// >= 15 ms per LED
+      		  }
+
+      		  memset(brightness, 0, 32);
+      		  for(uint8_t i = 0; i < disp; i++) brightness[i] = 10;
+      	  }
+    	  break;
+
+      case SUCCESS:
+    	  memset(brightness, 15, 32);	// all bright; held by the USB status block
+    	  break;
+
+      case ERROR_BMP:
+      case ERROR_USB:
+      	  {
+      		  /* Fast blink. ERROR_BMP is released by the USB status block after
+      		     its hold; ERROR_USB (USBX init failure) blinks forever. */
+      		  static uint32_t blink_tick = 0;
+      		  static uint8_t  blink_on = 0;
+      		  if(tick > blink_tick){ blink_tick = tick + 120000; blink_on ^= 1; }
+      		  memset(brightness, blink_on ? 12 : 0, 32);
+      	  }
     	  break;
 
       case START_UP:
@@ -1248,6 +1360,10 @@ static uint8_t save_metadata = 0;
     	  static uint8_t image_cycles = 0;
     	  static uint16_t frame_start_offset = 0;
 
+		  if(led_mode == POV_DISPLAY_USER && image_index < 2){
+			  image_index = 2;
+		  }
+
     	  switch(image_index){
 			  case 0:
 				  active_image_metadata = &(eo_metadata[0]);
@@ -1327,6 +1443,7 @@ static uint8_t save_metadata = 0;
 							  brightness[i] = pixel_pair_brightness & 0xF;
 							  brightness[i+1] = pixel_pair_brightness >> 4;
 						  }
+					  break;
 
 					  case 16:
 						  col_ptr = (active_image_metadata->image_data) + frame_start_offset*2*4 + offset_image_line*2*4;
@@ -1622,39 +1739,58 @@ static uint8_t save_metadata = 0;
 		current_frame = 0;	// reset frame counter so we start at first frame of animation
 	}
 
+
     if((last_active_tick + POWER_OFF_DELAY*1e6 < tick) || tick > MAX_POWER_OFF_DELAY*1e6){	// power off after inactive for too long
     	led_mode = POWER_OFF;
     }
 
     BCM_BuildFrame(brightness);
+
     /* ----------------------------------------------------------------
-     * BMP processing (deferred from write callback so USB stack
-     * finishes its current transaction first).
+     * BMP upload: convert a dropped file and store it to a user slot.
+     * Runs here (not in the USB write callback) so the flash erase/program
+     * stall never blocks the USBX transaction. The LED DMA keeps refreshing
+     * the last frame while this ~50 ms operation runs.
      * ---------------------------------------------------------------- */
-    /*if (g_bmp_pending) {
-        g_bmp_pending   = 0U;
-        hold_start      = now;
-        g_usb_led_state = 2U;
+    static uint8_t s_bmp_work = 0U;
+    if (g_bmp_pending && !s_bmp_work) {
+        /* Iteration 1: acknowledge, show PROGRAMMING, defer the blocking work
+           one loop so at least one "writing" frame is drawn before the stall.
+           g_bmp_fill_level is the bar *target*; the renderer ramps toward it. */
+        g_bmp_pending    = 0U;
+        g_usb_led_state  = 2U;            /* PROGRAMMING */
+        g_bmp_fill_level = 0U;
+        s_bmp_work       = 1U;
+    } else if (s_bmp_work) {
+        /* Iteration 2: convert + write flash (~50 ms; display stays frozen). */
+        s_bmp_work = 0U;
 
-        uint8_t  frame_idx   = g_bmp_frame_idx;
-        uint32_t data_sector = g_bmp_ram_sector;
-        uint32_t bmp_size    = g_bmp_ram_size;
+        uint8_t slot = 0U, slot_ok = 1U;
+        if      (g_bmp_frame_idx == 1U) slot = 0U;
+        else if (g_bmp_frame_idx == 2U) slot = 1U;
+        else                            slot_ok = 0U;   /* name must end in 1 or 2 */
 
-        const uint8_t *disk  = usbd_get_ram_disk_ptr();
-        const uint8_t *bmp   = disk + data_sector * 512U;
-
-        bmp_result_t conv = pov_bmp_convert(bmp, bmp_size, s_frame_buf);
-        if (conv != BMP_OK) {
-            g_usb_led_state = 4U;
-        } else if (frame_idx < POV_FRAME_RESERVED) {
-            g_usb_led_state = 4U;
+        if (!slot_ok) {
+            g_usb_led_state = 4U;                        /* ERROR */
         } else {
-            int wr = pov_frame_write(frame_idx, s_frame_buf);
-            g_usb_led_state = (wr == 0) ? 3U : 4U;
+            const uint8_t *bmp = usbd_get_ram_disk_ptr() + (uint32_t)g_bmp_ram_sector * 512U;
+            Image_Metadata meta;
+            bmp_result_t r = pov_bmp_convert(bmp, g_bmp_ram_size,
+                                             s_img_buf, sizeof s_img_buf,
+                                             g_bmp_is_sequence, &meta);
+            g_bmp_fill_level = 16U;
+            if (r != BMP_OK) {
+                g_usb_led_state = 4U;
+            } else if (pov_user_image_write(slot, &meta, s_img_buf,
+                                            meta.image_data_length) != 0) {
+                g_usb_led_state = 4U;
+            } else {
+                saved_metadata.user_images[slot] = meta;
+                g_usb_led_state = (update_metadata() == 0U) ? 3U : 4U;
+                if (g_usb_led_state == 3U) g_bmp_fill_level = 32U;
+            }
         }
     }
-    */
-
 
     /* USER CODE END WHILE */
 

@@ -24,8 +24,6 @@
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 #include <string.h>
-#include "pov_bmp.h"
-#include "pov_frame.h"
 extern volatile uint32_t g_usb_diag_events;
 extern volatile uint8_t  g_usb_diag_actv_n;
 /* USER CODE END Includes */
@@ -68,34 +66,49 @@ extern volatile uint8_t  g_usb_diag_actv_n;
 static UCHAR ram_disk[RAM_DISK_SIZE];
 static UINT  ram_disk_formatted = 0U;
 
+/* Content hash of the last BMP handed to main.c for each slot, so a root-dir
+   rewrite (the host touches sector 3 several times per copy) does not re-flash
+   the same image. Cleared on every (re)connect in USBD_STORAGE_Activate. */
+static uint32_t s_slot_sig[2] = {0U, 0U};
+
 /* ---- README.txt content baked onto the drive ---- */
 static const char readme_text[] =
-    "USB PROGRAMMING\r\n"
+    "POV CARD - USB IMAGE UPLOAD\r\n"
     "===========================\r\n"
-    "Drop a BMP file onto this drive to program an image to display.\r\n"
+    "Copy a BMP file onto this drive to load a custom\r\n"
+    "image. View uploads with the DISPLAY CUSTOM mode.\r\n"
     "\r\n"
-    "File requirements:\r\n"
-    "  Format  : 4-bit grayscale BMP (16 shades)\r\n"
-    "  Size    : 128 x 32 pixels\r\n"
-    "  Filename: must end with a digit 0-9 before .bmp\r\n"
-    "            e.g.  frame3.bmp   anim7.bmp   test9.bmp\r\n"
+    "BMP requirements:\r\n"
+    "  - uncompressed, 1-bit or 4-bit\r\n"
+    "  - height 8, 16 or 32 px\r\n"
+    "  - width up to 128 px\r\n"
     "\r\n"
-    "Frame slots:\r\n"
-    "  0, 1, 2  Reserved - built-in patterns (cannot be overwritten)\r\n"
-    "  3 to 9   User-programmable\r\n"
+    "Filename:\r\n"
+    "  - must end in 1 or 2 (the image slot) before\r\n"
+    "    \".bmp\"    e.g.  logo1.bmp -> slot 1\r\n"
+    "                    pic2.bmp  -> slot 2\r\n"
+    "  - start the name with \"SEQ\" for a multi-frame\r\n"
+    "    animation; frames are split on a 1px column\r\n"
+    "    that alternates every pixel.   e.g. seq1.bmp\r\n"
+    "  - any name works (upper/lower/long)\r\n"
     "\r\n"
-    "LED indicators:\r\n"
-    "  Slow blink  = USB ready, waiting for file\r\n"
-    "  Filling up  = File received, writing to flash\r\n"
-    "  All bright  = Programming successful\r\n"
-    "  Fast blink  = Error (wrong format, size, or reserved slot)\r\n"
+    "Re-uploading a slot overwrites it. Slots are kept\r\n"
+    "through a power cycle.\r\n"
     "\r\n"
-    "Unplug USB cable to exit programming mode.\r\n";
+    "LED status:\r\n"
+    "  slow pulse    ready, waiting for a file\r\n"
+    "  growing bar   writing to flash\r\n"
+    "  all bright    success\r\n"
+    "  fast blink    error - bad file, wrong slot,\r\n"
+    "                or image too large\r\n"
+    "\r\n"
+    "Wait for the slow pulse to return, then unplug.\r\n";
 
 /* ---- Shared state read by main.c ---- */
 volatile uint8_t  g_usb_connected  = 0U;   /* set by USBD_ChangeFunction  */
 volatile uint8_t  g_bmp_pending    = 0U;   /* set when a valid .BMP lands */
-volatile uint8_t  g_bmp_frame_idx  = 0U;   /* frame slot (3-9)            */
+volatile uint8_t  g_bmp_frame_idx  = 0U;   /* trailing filename digit (0-9) */
+volatile uint8_t  g_bmp_is_sequence = 0U;  /* name starts with "SEQ" -> animation */
 volatile uint8_t  g_bmp_fill_level = 0U;   /* 0-32 for fill animation     */
 volatile uint8_t  g_usb_led_state  = 0U;   /* 0=idle 1=ready 2=prog 3=ok 4=err */
 volatile uint32_t g_bmp_ram_sector = 0U;   /* first disk sector of BMP data */
@@ -125,17 +138,6 @@ static void fat12_set(uint8_t *fat, uint32_t cluster, uint16_t value)
         fat[byte_idx]     = (uint8_t)((fat[byte_idx] & 0x0FU)
                               | ((value & 0x0FU) << 4U));
         fat[byte_idx + 1U] = (uint8_t)((value >> 4U) & 0xFFU);
-    }
-}
-
-/* Read a FAT12 entry (12-bit). */
-static uint16_t fat12_get(const uint8_t *fat, uint32_t cluster)
-{
-    uint32_t byte_idx = cluster + (cluster / 2U);
-    if (cluster % 2U == 0U) {
-        return (uint16_t)(fat[byte_idx] | ((fat[byte_idx + 1U] & 0x0FU) << 8U));
-    } else {
-        return (uint16_t)((fat[byte_idx] >> 4U) | ((uint16_t)fat[byte_idx + 1U] << 4U));
     }
 }
 
@@ -207,12 +209,56 @@ static void ram_disk_format(void)
     memcpy(data, readme_text, readme_len);
 }
 
+/* Reconstruct a VFAT long filename for the short entry at root index `sfn_idx`
+   by walking the LFN entries that physically precede it (stored highest-ordinal
+   first). Writes an ASCII copy (non-ASCII -> '?') to name[LFN_NAME_MAX] and
+   returns its length, or 0 if the entry has no long name. */
+#define LFN_NAME_MAX  78U   /* up to 6 LFN entries x 13 chars */
+
+static uint32_t lfn_read(const uint8_t *root, uint32_t sfn_idx, char *name)
+{
+    static const uint8_t off[13] = { 1,3,5,7,9, 14,16,18,20,22,24, 28,30 };
+    uint32_t max_ord = 0U;
+
+    memset(name, 0, LFN_NAME_MAX);
+
+    for (int32_t j = (int32_t)sfn_idx - 1; j >= 0; j--) {
+        const uint8_t *e = root + (uint32_t)j * DIRENT_SIZE;
+
+        if (e[DIRENT_ATTR] != 0x0FU) break;      /* not an LFN entry */
+        if (e[0] == 0xE5U)           break;      /* deleted */
+
+        uint32_t ord = (uint32_t)(e[0] & 0x1FU);
+        if (ord == 0U || ord > (LFN_NAME_MAX / 13U)) break;
+
+        uint32_t base = (ord - 1U) * 13U;
+        for (uint32_t k = 0; k < 13U; k++) {
+            uint16_t ch = (uint16_t)e[off[k]] | ((uint16_t)e[off[k] + 1U] << 8);
+            name[base + k] = (ch == 0x0000U || ch == 0xFFFFU) ? '\0'
+                           : (ch < 0x80U) ? (char)ch : '?';
+        }
+        if (ord > max_ord) max_ord = ord;
+
+        if (e[0] & 0x40U) break;                 /* last (highest-ordinal) piece */
+    }
+
+    if (max_ord == 0U) return 0U;
+
+    uint32_t len = max_ord * 13U;
+    for (uint32_t k = 0; k < len; k++) {
+        if (name[k] == '\0') { len = k; break; }
+    }
+    return len;
+}
+
 /*
  * Scan the root directory for a completed .BMP directory entry.
  * Called whenever sector 3 (root directory) is written.
  *
  * A "complete" entry has a non-zero file size and a valid starting cluster.
- * We also validate the filename ends with a digit before the '.BMP' extension.
+ * The target slot is the last filename character before ".bmp" (1 or 2);
+ * a "SEQ" prefix marks a multi-frame animation. The long (VFAT) name is used
+ * when present so mixed-case names like "EO_Logo1.bmp" work.
  */
 static void check_for_bmp(void)
 {
@@ -226,22 +272,45 @@ static void check_for_bmp(void)
             continue;
         uint8_t attr = e[DIRENT_ATTR];
         if (attr & (ATTR_VOLUME_ID | 0x10U | 0x08U))
-            continue;   /* volume ID, directory, or system */
+            continue;   /* volume ID, directory, or system (also skips LFN 0x0F) */
 
-        /* Must have .BMP or .bmp extension (bytes 8–10 in 8.3 name). */
+        /* Must have .BMP / .bmp extension (8.3 name bytes 8-10). */
         if ((e[8] != 'B' && e[8] != 'b') || (e[9] != 'M' && e[9] != 'm') || (e[10] != 'P' && e[10] != 'p'))
             continue;
 
-        /* 8.3 name is space-padded; find the last non-space in bytes 0–7
-           and check that it is a digit 0–9. */
-        int  name_end = -1;
-        for (int j = 7; j >= 0; j--) {
-            if (e[j] != ' ') { name_end = j; break; }
-        }
-        if (name_end < 0)
-            continue;
+        /* --- slot digit + sequence flag from the filename --- */
+        char     lname[LFN_NAME_MAX];
+        uint32_t lnlen = lfn_read(root, i, lname);
+        uint8_t  last_char, is_seq;
 
-        uint8_t last_char = e[name_end];
+        if (lnlen >= 5U) {
+            /* Long name present: trust it over the (possibly mangled) 8.3 alias.
+               Must be "...X.bmp". */
+            if (lname[lnlen - 4] != '.' ||
+                (lname[lnlen - 3] != 'b' && lname[lnlen - 3] != 'B') ||
+                (lname[lnlen - 2] != 'm' && lname[lnlen - 2] != 'M') ||
+                (lname[lnlen - 1] != 'p' && lname[lnlen - 1] != 'P'))
+                continue;
+            last_char = (uint8_t)lname[lnlen - 5];
+            is_seq = ((lname[0] == 'S' || lname[0] == 's') &&
+                      (lname[1] == 'E' || lname[1] == 'e') &&
+                      (lname[2] == 'Q' || lname[2] == 'q')) ? 1U : 0U;
+        } else {
+            /* No long name: use the 8.3 short name. A '~' with no LFN means a
+               mangled alias we can't interpret -- skip it. */
+            int has_tilde = 0, name_end = -1;
+            for (int j = 0; j < 8; j++) if (e[j] == '~') { has_tilde = 1; break; }
+            if (has_tilde)
+                continue;
+            for (int j = 7; j >= 0; j--) { if (e[j] != ' ') { name_end = j; break; } }
+            if (name_end < 0)
+                continue;
+            last_char = e[name_end];
+            is_seq = ((e[0] == 'S' || e[0] == 's') &&
+                      (e[1] == 'E' || e[1] == 'e') &&
+                      (e[2] == 'Q' || e[2] == 'q')) ? 1U : 0U;
+        }
+
         if (last_char < '0' || last_char > '9')
             continue;
 
@@ -279,13 +348,25 @@ static void check_for_bmp(void)
             continue;
         if (bmp_data[1] != 'M' && bmp_data[1] != 'm')
             continue;
-          
+
+        /* Content hash (FNV-1a). If this slot already got these exact bytes,
+           the host is just rewriting the directory -- don't re-flash. */
+        uint32_t sig = 2166136261U;
+        for (uint32_t k = 0; k < fsize; k++) {
+            sig ^= bmp_data[k];
+            sig *= 16777619U;
+        }
+        uint32_t sig_slot = (frame_idx == 2U) ? 1U : 0U;
+        if (sig == s_slot_sig[sig_slot])
+            continue;
+        s_slot_sig[sig_slot] = sig;
 
         // Signal main loop to process this BMP.
-        g_bmp_frame_idx  = frame_idx;
-        g_bmp_ram_sector = data_sector;
-        g_bmp_ram_size   = fsize;
-        g_bmp_pending    = 1U;
+        g_bmp_frame_idx   = frame_idx;
+        g_bmp_is_sequence = is_seq;
+        g_bmp_ram_sector  = data_sector;
+        g_bmp_ram_size    = fsize;
+        g_bmp_pending     = 1U;
 
         return;
     }
@@ -310,8 +391,11 @@ VOID USBD_STORAGE_Activate(VOID *storage_instance)
      (vbus_sensing_enable=DISABLE means no Deactivate fires), ram_disk_formatted
      stayed 1 and the next connection served the stale/partially-written disk. */
   g_bmp_pending = 0U;     /* discard any BMP queued from a previous session */
+  s_slot_sig[0] = 0U;     /* fresh disk -> forget which images we've seen */
+  s_slot_sig[1] = 0U;
   ram_disk_format();
   ram_disk_formatted = 1U;
+  g_usb_connected = 1U;   /* drive mounted: a host is definitely present */
   g_usb_led_state = 1U;
   /* USER CODE END USBD_STORAGE_Activate */
 
@@ -329,6 +413,7 @@ VOID USBD_STORAGE_Deactivate(VOID *storage_instance)
   /* USER CODE BEGIN USBD_STORAGE_Deactivate  */
   g_usb_diag_events |= (1U << 9);
   UX_PARAMETER_NOT_USED(storage_instance);
+  g_usb_connected = 0U;
   g_usb_led_state = 0U;
   /* Force re-format on next connection so Windows always sees a clean disk.
      Without this, a mid-write disconnect leaves a corrupt FAT that Windows
@@ -409,15 +494,12 @@ UINT USBD_STORAGE_Write(VOID *storage_instance, ULONG lun, UCHAR *data_pointer,
            data_pointer,
            number_blocks * RAM_DISK_SECTOR_SIZE);
 
-    for (ULONG s = lba; s < lba + number_blocks; s++) {
-        /* Root directory written: check for a completed .BMP entry.
-           Fill animation is intentionally NOT driven from here — OS metadata
-           writes (dirty-flag, thumbs.db, etc.) would otherwise trigger it
-           immediately on mount. The animation runs from main.c instead. */
-        if (s == SECTOR_ROOTDIR) {
-            check_for_bmp();
-        }
-    }
+    /* Re-scan for a completed .BMP after every write, not just root-dir writes:
+       the host may flush the directory entry before the file data (or vice
+       versa), so we can't assume which write completes the picture.
+       check_for_bmp() only signals when BOTH the entry and BM-signed data are
+       present, and its per-slot content hash makes repeat calls no-ops. */
+    check_for_bmp();
   }
 
   status = UX_STATE_NEXT;   /* 4 = success for standalone USBX 6.2+ */
