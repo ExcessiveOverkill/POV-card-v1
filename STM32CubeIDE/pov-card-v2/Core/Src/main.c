@@ -783,46 +783,48 @@ static uint8_t save_metadata = 0;
 
 		uint8_t want_status = (g_usb_connected || g_usb_led_state >= 2U);
 
-		if(!usb_status_active){
-			if(want_status && led_mode != USB_DFU && led_mode != ERROR_USB){
-				usb_status_active = 1;
-				prev_led_mode = led_mode;
-				memcpy(prev_blank_ccr, blank_ccr, sizeof(blank_ccr));
-				memcpy(blank_ccr, usb_blank_ccr, sizeof(blank_ccr));
+		if(led_mode != POWER_OFF){	// if we run out of time, prevent usb from keeping card on and draining the battery
+			if(!usb_status_active){
+				if(want_status && led_mode != USB_DFU && led_mode != ERROR_USB){
+					usb_status_active = 1;
+					prev_led_mode = led_mode;
+					memcpy(prev_blank_ccr, blank_ccr, sizeof(blank_ccr));
+					memcpy(blank_ccr, usb_blank_ccr, sizeof(blank_ccr));
+					shown = 0;
+					shown_until = 0;
+				}
+			}
+			else if(want_status || tick < shown_until){
+				if(g_usb_connected) last_active_tick = tick;	// don't sleep while plugged in
+
+				/* Adopt a new status only once the current one has had its hold. */
+				if(g_usb_led_state != shown && tick >= shown_until){
+					shown = g_usb_led_state;
+					shown_until = tick + (shown == 2U ? PROG_HOLD :
+										  shown == 3U ? OK_HOLD   :
+										  shown == 4U ? ERR_HOLD  : 0U);
+				}
+				/* A finished SUCCESS/ERROR drops back to ready once its hold ends. */
+				if(shown >= 3U && tick >= shown_until){
+					shown = 1U;
+					g_usb_led_state = 1U;
+				}
+
+				switch(shown){
+					case 2:  led_mode = PROGRAMMING; break;
+					case 3:  led_mode = SUCCESS;     break;
+					case 4:  led_mode = ERROR_BMP;   break;
+					default: led_mode = USB_READY;   break;	// 0 (idle) or 1 (ready)
+				}
+			}
+			else{	// USB gone and no status hold pending -> restore
+				usb_status_active = 0;
 				shown = 0;
 				shown_until = 0;
+				led_mode = prev_led_mode;
+				g_usb_led_state = 0;
+				memcpy(blank_ccr, prev_blank_ccr, sizeof(blank_ccr));
 			}
-		}
-		else if(want_status || tick < shown_until){
-			if(g_usb_connected) last_active_tick = tick;	// don't sleep while plugged in
-
-			/* Adopt a new status only once the current one has had its hold. */
-			if(g_usb_led_state != shown && tick >= shown_until){
-				shown = g_usb_led_state;
-				shown_until = tick + (shown == 2U ? PROG_HOLD :
-				                      shown == 3U ? OK_HOLD   :
-				                      shown == 4U ? ERR_HOLD  : 0U);
-			}
-			/* A finished SUCCESS/ERROR drops back to ready once its hold ends. */
-			if(shown >= 3U && tick >= shown_until){
-				shown = 1U;
-				g_usb_led_state = 1U;
-			}
-
-			switch(shown){
-				case 2:  led_mode = PROGRAMMING; break;
-				case 3:  led_mode = SUCCESS;     break;
-				case 4:  led_mode = ERROR_BMP;   break;
-				default: led_mode = USB_READY;   break;	// 0 (idle) or 1 (ready)
-			}
-		}
-		else{	// USB gone and no status hold pending -> restore
-			usb_status_active = 0;
-			shown = 0;
-			shown_until = 0;
-			led_mode = prev_led_mode;
-			g_usb_led_state = 0;
-			memcpy(blank_ccr, prev_blank_ccr, sizeof(blank_ccr));
 		}
 	}
 

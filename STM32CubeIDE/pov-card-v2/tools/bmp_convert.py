@@ -10,7 +10,8 @@ SEQUENCE_CYCLE_COUNT    = 3
 
 # List 1 or 2 BMP files to process. Paths are resolved relative to this script.
 INPUT_FILES = [
-    "test_sequence_1_bit.bmp",
+    # "test_sequence_1_bit.bmp",
+    "SEQtest2.bmp",
     "EO_Logo.bmp",
     # "image2_sequence.bmp",
 ]
@@ -90,7 +91,10 @@ def process_bmp(path):
         raise ValueError(f"{path}: height {h} must be 8, 16, or 32")
 
     pixels = img.load()
-    is_seq = "sequence" in os.path.basename(path).lower()
+    if("sequence" in os.path.basename(path).lower() or "seq" in os.path.basename(path).lower()):
+        is_seq = True
+    else:
+        is_seq = False
 
     if is_seq:
         frames = find_sequence_frames(pixels, w, h)
