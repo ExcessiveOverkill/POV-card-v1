@@ -95,7 +95,7 @@ The line should be perfectly straight and vertical when you shake the badge. Sli
 
 ## Firmware Update (DANGER)
 ### 9. USB Device Firmware Update
-Allows the badge to be fully reprogrammed with a new binary file using STM32CubeProgrammer over the USB port. `-ob nBOOT0=1` must be added when using the programmer to reset the DFU bit, otherwise the badge will be stuck in DFU mode. Once this mode is entered, the badge will not function until reprogrammed!
+Allows the badge to be fully reprogrammed with a new binary file using STM32CubeProgrammer over the USB port. `-ob nBOOT0=1` must be added when using the programmer to reset the DFU bit, otherwise the badge will be stuck in DFU mode. Once this mode is entered, the badge will not function until reprogrammed! "ON" button must be held down to program the badge in this mode *or* with an ST-LINK.
 User-memory will also be cleared.
 
 
