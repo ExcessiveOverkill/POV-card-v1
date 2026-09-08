@@ -93,26 +93,11 @@ This function requires verification (see below).
 Displays a diagonal line. Useful for practicing the correct shake technique to get the best display results.
 The line should be perfectly straight and vertical when you shake the badge. Slight distortion is acceptable, but if it is very distorted, read the "How to get a good image" section.
 
-## Diagnostic Modes
-### 9. Accelerometer Raw X
-Displays the measured X acceleration (left/right).
-
-### 10. Accelerometer Raw Y
-Displays the measured Y acceleration (up/down).
-
-### 11. Accelerometer Raw Z
-Displays the measured Z acceleration (in/out).
-
-### 12. LED Dynamic Dim Test
-Displays a dimming sequence.
-
-### 13. LED Dynamic Test
-Displays a sequence.
-
 ## Firmware Update (DANGER)
-### 14. USB Device Firmware Update
-Allows the badge to be fully reprogrammed with a new binary file using STM32CubeProgrammer over the USB port. Once this mode is entered, the badge will not function until reprogrammed!
+### 9. USB Device Firmware Update
+Allows the badge to be fully reprogrammed with a new binary file using STM32CubeProgrammer over the USB port. `-ob nBOOT0=1` must be added when using the programmer to reset the DFU bit, otherwise the badge will be stuck in DFU mode. Once this mode is entered, the badge will not function until reprogrammed!
 User-memory will also be cleared.
+
 
 ## Mode Verification
 Certain modes are protected by a verification step to prevent accidental triggering.
