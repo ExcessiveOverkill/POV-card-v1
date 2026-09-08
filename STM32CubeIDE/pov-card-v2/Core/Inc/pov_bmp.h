@@ -25,9 +25,10 @@ typedef enum {
     BMP_ERR_BPP,              /* bits-per-pixel is not 1 or 4             */
     BMP_ERR_COMPRESSION,      /* compression != 0 (BI_RGB required)       */
     BMP_ERR_HEIGHT,           /* |height| is not 8, 16 or 32              */
-    BMP_ERR_WIDTH,            /* width < 1 or > 255                       */
+    BMP_ERR_WIDTH,            /* total width < 1 or absurdly large        */
     BMP_ERR_DATA_OOB,         /* pixel data extends past end of buffer    */
     BMP_ERR_TOO_MANY_FRAMES,  /* sequence split produced > 128 frames     */
+    BMP_ERR_FRAME_WIDTH,      /* a single frame is wider than 128 columns */
     BMP_ERR_OUTPUT_FULL,      /* packed columns exceed out_cap            */
 } bmp_result_t;
 

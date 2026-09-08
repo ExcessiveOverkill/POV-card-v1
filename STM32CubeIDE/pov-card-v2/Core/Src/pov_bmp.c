@@ -12,6 +12,13 @@
 #define SEQUENCE_DISPLAY_CYCLES    2U
 #define SEQUENCE_CYCLE_COUNT       3U
 
+/* A single frame (one display) can be at most this many columns wide --
+   Image_Metadata.frame_columns[] entries top out here regardless. A
+   *sequence* BMP's total width is the sum of its frames plus one separator
+   column between each, so it is checked per-frame below rather than
+   against a total-width bound. */
+#define POV_BMP_MAX_FRAME_WIDTH   128U
+
 /* BMP header field offsets (all values little-endian in the file) */
 #define BMP_OFF_PIXEL_OFFSET  10U   /* uint32: byte offset to pixel data      */
 #define BMP_OFF_DIB_SIZE      14U   /* uint32: DIB (info) header size         */
@@ -128,7 +135,14 @@ bmp_result_t pov_bmp_convert(const uint8_t *bmp, uint32_t bmp_len,
     int32_t h = (height < 0) ? -height : height;
     if (h != 8 && h != 16 && h != 32)        return BMP_ERR_HEIGHT;
     if (comp != 0U)                          return BMP_ERR_COMPRESSION;
-    if (width < 1 || width > 255)            return BMP_ERR_WIDTH;
+    /* Total width sanity bound only -- the largest a legitimate sequence can
+       be is POV_IMAGE_MAX_FRAMES frames of POV_BMP_MAX_FRAME_WIDTH columns
+       each plus a separator between every pair. Each frame's own width is
+       checked individually below; a single (non-sequence) image is exactly
+       one frame, so that same per-frame check covers it too. */
+    if (width < 1 ||
+        width > (int32_t)(POV_IMAGE_MAX_FRAMES * (POV_BMP_MAX_FRAME_WIDTH + 1U)))
+        return BMP_ERR_WIDTH;
 
     uint32_t w         = (uint32_t)width;
     uint32_t row_pitch = (((w * bpp) + 31U) / 32U) * 4U;
@@ -147,9 +161,13 @@ bmp_result_t pov_bmp_convert(const uint8_t *bmp, uint32_t bmp_len,
     for (uint32_t i = 0; i < 16U; i++)
         c.luma[i] = (i < pal_count) ? pal_luma(bmp + pal_off + i * 4U) : 0U;
 
-    /* ---- frame spans ---- */
-    uint8_t  starts[POV_IMAGE_MAX_FRAMES];
-    uint8_t  ends[POV_IMAGE_MAX_FRAMES];
+    /* ---- frame spans ----
+       Column positions, not widths -- a sequence's total width (sum of all
+       frames plus their separators) can exceed 255, so these must be wider
+       than uint8_t even though each individual frame is capped at
+       POV_BMP_MAX_FRAME_WIDTH (128) below. */
+    uint16_t starts[POV_IMAGE_MAX_FRAMES];
+    uint16_t ends[POV_IMAGE_MAX_FRAMES];
     uint32_t nframes = 0;
 
     if (is_sequence) {
@@ -158,8 +176,8 @@ bmp_result_t pov_bmp_convert(const uint8_t *bmp, uint32_t bmp_len,
             if (is_separator_col(&c, x, (uint32_t)h)) {
                 if (x > start) {
                     if (nframes >= POV_IMAGE_MAX_FRAMES) return BMP_ERR_TOO_MANY_FRAMES;
-                    starts[nframes] = (uint8_t)start;
-                    ends[nframes]   = (uint8_t)x;
+                    starts[nframes] = (uint16_t)start;
+                    ends[nframes]   = (uint16_t)x;
                     nframes++;
                 }
                 start = x + 1U;
@@ -167,14 +185,14 @@ bmp_result_t pov_bmp_convert(const uint8_t *bmp, uint32_t bmp_len,
         }
         if (start < w) {
             if (nframes >= POV_IMAGE_MAX_FRAMES) return BMP_ERR_TOO_MANY_FRAMES;
-            starts[nframes] = (uint8_t)start;
-            ends[nframes]   = (uint8_t)w;
+            starts[nframes] = (uint16_t)start;
+            ends[nframes]   = (uint16_t)w;
             nframes++;
         }
         if (nframes == 0) return BMP_ERR_TOO_MANY_FRAMES;   /* every column a separator */
     } else {
         starts[0] = 0;
-        ends[0]   = (uint8_t)w;
+        ends[0]   = (uint16_t)w;
         nframes   = 1;
     }
 
@@ -184,6 +202,7 @@ bmp_result_t pov_bmp_convert(const uint8_t *bmp, uint32_t bmp_len,
     uint8_t  max_w = 0;
     for (uint32_t f = 0; f < nframes; f++) {
         uint32_t fw = (uint32_t)(ends[f] - starts[f]);
+        if (fw > POV_BMP_MAX_FRAME_WIDTH) return BMP_ERR_FRAME_WIDTH;
         meta->frame_columns[f] = (uint8_t)fw;
         if (fw > max_w) max_w = (uint8_t)fw;
         for (uint32_t x = starts[f]; x < ends[f]; x++) {
@@ -217,6 +236,7 @@ const char *pov_bmp_strerror(bmp_result_t result)
     case BMP_ERR_WIDTH:           return "Bad width";
     case BMP_ERR_DATA_OOB:        return "Pixel data truncated";
     case BMP_ERR_TOO_MANY_FRAMES: return "Too many frames";
+    case BMP_ERR_FRAME_WIDTH:     return "Frame wider than 128px";
     case BMP_ERR_OUTPUT_FULL:     return "Image too large";
     default:                      return "Unknown error";
     }

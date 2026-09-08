@@ -597,14 +597,14 @@ static uint8_t save_metadata = 0;
 	  MODE_SAVE_MODE,
 	  MODE_LEVEL_CAL,
 	  MODE_RESET,
+	  MODE_USB_DFU,
+	  MODE_END,
 	  MODE_IMAGE_LINE_DISPLAY,
 	  MODE_ACCEL_X_RAW_DISPLAY,
 	  MODE_ACCEL_Y_RAW_DISPLAY,
 	  MODE_ACCEL_Z_RAW_DISPLAY,
 	  MODE_LED_DYNAMIC_DIM_DISPLAY,
-	  MODE_LED_DYNAMIC_DISPLAY,
-	  MODE_USB_DFU,
-	  MODE_END
+	  MODE_LED_DYNAMIC_DISPLAY
 
   }	mode = 0;
 
@@ -876,13 +876,22 @@ static uint8_t save_metadata = 0;
     	  break;
 
       case ERROR_BMP:
+		  {
+			  /* Fast blink. ERROR_BMP is released by the USB status block after
+				 its hold; ERROR_USB (USBX init failure) blinks forever. */
+			  static uint32_t blink_tick = 0;
+			  static uint8_t  blink_on = 0;
+			  if(tick > blink_tick){ blink_tick = tick + 200e3; blink_on ^= 1; }
+			  memset(brightness, blink_on ? 12 : 0, 32);
+		  }
+		  break;
       case ERROR_USB:
       	  {
       		  /* Fast blink. ERROR_BMP is released by the USB status block after
       		     its hold; ERROR_USB (USBX init failure) blinks forever. */
       		  static uint32_t blink_tick = 0;
       		  static uint8_t  blink_on = 0;
-      		  if(tick > blink_tick){ blink_tick = tick + 120000; blink_on ^= 1; }
+      		  if(tick > blink_tick){ blink_tick = tick + 800e3; blink_on ^= 1; }
       		  memset(brightness, blink_on ? 12 : 0, 32);
       	  }
     	  break;
@@ -1212,6 +1221,7 @@ static uint8_t save_metadata = 0;
 						  led_mode = next_mode;
 						  first_cycle = 1;	// force rebuilding image
 						  memset(brightness, 0, 32);	// off
+						  memcpy(blank_ccr, next_blank_ccr, sizeof(blank_ccr));
 					  }
 				  }
 			  }
@@ -1564,6 +1574,7 @@ static uint8_t save_metadata = 0;
 			static int16_t tilt[128];
 			static uint8_t tilt_idx = 0;
 			static int16_t last_tilt = 0;
+			static int32_t sum_filtered = 0;
 			uint8_t x_active = 0;
 			if(abs(avg_x_accel) > abs(avg_y_accel)){
 			  // assume x is the vertical axis
@@ -1580,6 +1591,9 @@ static uint8_t save_metadata = 0;
 			  sum += (int32_t)tilt[i];
 			}
 
+			sum_filtered = (sum_filtered * ((1<<8) - 1) + sum) / (1<<8);	// simple low-pass filter
+			sum = sum_filtered;
+
 			tilt_idx++;
 			if(tilt_idx == 128){
 			  tilt_idx = 0;
@@ -1589,7 +1603,7 @@ static uint8_t save_metadata = 0;
 
 			// calibration mode
 			if(level_cal_mode_enable){
-				if((tick > last_active_tick + 3e6) && (sum > -15*128) && (sum < 15*128)){	// stable for 3 seconds and near expected zero
+				if((tick > last_active_tick + 3e6) && (sum > -2048*15) && (sum < 2048*15)){	// stable for 3 seconds and not at edge
 					memset(brightness, 1, 32);	// all dim
 					if(x_active && (x_cal_done == 0)){
 						x_cal_done = 1;
@@ -1618,6 +1632,12 @@ static uint8_t save_metadata = 0;
 
 
 			set_led_brightness(sum, brightness, -2048*16, 2048*16);
+
+			// add center lines
+			brightness[16+2] += 2;
+			brightness[15-2] += 2;
+			if(brightness[15-2] > 15) brightness[15-2] = 15;
+			if(brightness[16+2] > 15) brightness[16+2] = 15;
 
 
 			sum = sum / 128;
