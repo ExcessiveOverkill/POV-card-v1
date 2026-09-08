@@ -961,10 +961,22 @@ static uint8_t save_metadata = 0;
 				  done++;
 				  if(done == 5){
 
-					  if(save_mode_enable){
-						  saved_metadata.startup_mode = last_mode;
-						  save_metadata = 1;
+					  // only allow certain modes to be saved
+					  if(
+						  last_mode == MODE_POV_DISPLAY_BOTH ||
+						  last_mode == MODE_POV_DISPLAY_USER_ONLY ||
+						  last_mode == MODE_LEVEL ||
+						  last_mode == MODE_BALL_SIM ||
+						  last_mode == MODE_IMAGE_LINE_DISPLAY
+					  ){
+
+						  if(save_mode_enable){
+							  saved_metadata.startup_mode = last_mode;
+							  save_metadata = 1;
+						  }
 					  }
+
+					  
 
 					  if(save_metadata){
 						  if(update_metadata() && led_mode != FLASH_ERROR){
