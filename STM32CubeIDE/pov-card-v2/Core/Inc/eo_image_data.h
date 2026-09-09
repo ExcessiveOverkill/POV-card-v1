@@ -117,7 +117,7 @@ const Image_Metadata eo_metadata[2] = {
         .image_data_length = 1280
     },
     {
-        .display_cycles = 15,
+        .display_cycles = 30,
         .cycle_count = 1,
         .column_height = 32,
         .max_frame_columns = 32,

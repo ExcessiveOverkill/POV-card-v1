@@ -7,7 +7,7 @@
  * ----------------------------------------------------------------------- */
 
 /* Per-image timing -- keep in sync with tools/bmp_convert.py */
-#define SINGLE_DISPLAY_CYCLES     15U
+#define SINGLE_DISPLAY_CYCLES     30U
 #define SINGLE_CYCLE_COUNT         1U
 #define SEQUENCE_DISPLAY_CYCLES    2U
 #define SEQUENCE_CYCLE_COUNT       3U

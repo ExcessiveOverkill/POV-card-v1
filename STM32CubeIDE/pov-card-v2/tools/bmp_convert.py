@@ -3,7 +3,7 @@ import os
 import struct
 
 # ── Configurable constants ───────────────────────────────────────────────────
-SINGLE_DISPLAY_CYCLES   = 15
+SINGLE_DISPLAY_CYCLES   = 30
 SINGLE_CYCLE_COUNT      = 1
 SEQUENCE_DISPLAY_CYCLES = 2
 SEQUENCE_CYCLE_COUNT    = 3
