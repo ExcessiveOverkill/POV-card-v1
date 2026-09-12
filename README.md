@@ -2,35 +2,34 @@
 Turn on then shake side to side to view the images or animations programmed into the badge.
 
 ## Specs:
-Requires 2x CR2032 batteries (badge is not rechargeable)
-Credit card sized: 2.1" x 3.3" (54mm x 84mm)
-0.8mm PCB thickness, 4mm total thickness with components
-Black PCB soldermask
-32 bright white leds
-ENIG (thin gold) plated
+- Requires 2x CR2032 batteries (badge is not rechargeable)
+- Credit card sized: 2.1" x 3.3" (54mm x 84mm)
+- 0.8mm PCB thickness, 4mm total thickness with components
+- Black PCB soldermask
+- 32 bright white leds
+- ENIG (thin gold) plated
 
 ## Features:
-Image or animation display
-User programmable images/animations over USB-C
-User configurable modes set by tapping the badge
-4-bit grayscale image support
-Many new display modes
-XYZ Accelerometer
-True power-off (batteries last when not in use)
-Auto power-off
+- Image or animation display
+- User programmable images/animations over USB-C
+- User configurable modes set by tapping the badge
+- 4-bit grayscale image support
+- Many new display modes
+- XYZ Accelerometer
+- True power-off (batteries last when not in use)
+- Auto power-off
 
 
 # How to use:
 ## Turning On:
-Press "ON" button on badge.
-Badge will display power-on animation when first powered on.
+1. Press "ON" button on badge.
+2. Badge will display power-on animation when first powered on.
 
 Pressing the "ON" button once badge is already on will have no effect.
 
 ## Turning Off:
-Do nothing
-
-Badge will automatically power off after it is no longer being interacted with for around 20 seconds. It will also power off regardless of interaction after 5 minutes.
+1. Do nothing
+2. Badge will automatically power off after it is no longer being interacted with for around 20 seconds. It will also power off regardless of interaction after 5 minutes.
 
 ## Changing Mode:
 1. Turn badge on
@@ -57,7 +56,7 @@ Badge will automatically power off after it is no longer being interacted with f
 - File size must be less than 2KB
 
 ## How to get a good image
-Image quality greatly depends on the shaking motion. Use mode 8: "POV Line Test" to visualize your shake motion.
+Image quality greatly depends on the shaking motion. Use mode 8: "IMAGE LINE TEST" to visualize your shake motion.
 ### Things to improve display quality
 - Hold badge further away
 - Smooth, uniform shaking. Slower and more consistent is better than fast and crazy.
@@ -65,31 +64,31 @@ Image quality greatly depends on the shaking motion. Use mode 8: "POV Line Test"
 - Symmetrical movement, *not* like trying to shake ketchup out of a bottle.
 
 ## Modes
-### 1. POV Display All
-Display both the pre-programmed image/animation shipped with the badge as well as all user-programmed images/animations.
+### 1. DISPLAY BOTH
+Display both the pre-programmed image/animation shipped with the badge as well as all custom user-programmed images/animations.
 
-### 2. POV Display User
-Display only the user-programmed images/animations.
+### 2. DISPLAY CUSTOM
+Display only the custom user-programmed images/animations.
 
-### 3. Level
-Emulates a bubble level. Hold the badge edge against a vertical or horizontal surface. Use the "Level Calibration" mode to improve accuracy.
+### 3. LEVEL
+Emulates a bubble level. Hold the badge edge against a vertical or horizontal surface. Use the "LEVEL CAL" mode to improve accuracy.
 
-### 4. Ball Simulator
+### 4. BALL SIM
 LEDs display a "ball" that reacts to how you move and tilt the badge.
 
-### 5. Save Mode
+### 5. SAVE MODE
 Save the last selected mode and automatically switch to it on the next power-on.
 This function requires verification (see below).
 
-### 6. Level Calibration
-Calibrate the angles the badge uses for "Level" mode. After entering this mode, hold the long badge still against a known horizontal surface until the LEDs all turn on. Then hold the short edge still against the surface until the "bubble" resets to center.
+### 6. LEVEL CAL
+Calibrate the angles the badge uses for "LEVEL" mode. After entering this mode, hold the long badge still against a known horizontal surface until the LEDs all turn on. Then hold the short edge still against the surface until the "bubble" resets to center.
 This function requires verification (see below).
 
-### 7. Reset
+### 7. RESET
 Clears all user-programmed memory. Badge will power off after this mode is selected.
 This function requires verification (see below).
 
-### 8. POV Line Test
+### 8. IMAGE LINE TEST
 Displays a diagonal line. Useful for practicing the correct shake technique to get the best display results.
 The line should be perfectly straight and vertical when you shake the badge. Slight distortion is acceptable, but if it is very distorted, read the "How to get a good image" section.
 
