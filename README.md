@@ -35,12 +35,12 @@ Pressing the "ON" button once badge is already on will have no effect.
 1. Turn badge on
 2. Tap top of badge downward 3 times quickly to enter the mode menue, it should display the current mode by turning on an LED. The distance the LED is from the bottom of the badge shows what mode it is in.
 3. Tap top of badge downward to move LED down, Tap bottom of badge upward to move LED up
-4. Wait 3 seconds for badge to enter new mode. You may shake the badge while in the mode menu to view what mode is selected.
+4. Wait 3 seconds for badge to enter new mode. You may shake the badge while in the mode menu to view what mode is selected. For SAVE MODE, LEVEL CAL, RESET and USB UPDATE, shaking is also the confirmation (see Mode Verification).
 5. Done!
 
 ## USB Programming:
 1. Turn badge on
-2. Plug into computer using a USB-C cable, ensure the cable can carry data and not only power.
+2. Plug into a USB-A port on the computer, or into a USB-C to USB-A adapter or hub, using a USB-C to USB-A cable that carries data. A USB-C port on the computer will not work: the badge's connector has no CC pull-down resistors, so a USB-C host never enables the connection.
 3. Badge will display slow pulsing to indicate USB connection.
 4. Badge should show up as a USB storage device (flash drive).
 5. Copy your BMP file to the badge
@@ -94,7 +94,7 @@ The line should be perfectly straight and vertical when you shake the badge. Sli
 
 ## Firmware Update (DANGER)
 ### 9. USB Device Firmware Update
-Allows the badge to be fully reprogrammed with a new binary file using STM32CubeProgrammer over the USB port. `-ob nBOOT0=1` must be added when using the programmer to reset the DFU bit, otherwise the badge will be stuck in DFU mode. Once this mode is entered, the badge will not function until reprogrammed! "ON" button must be held down to program the badge in this mode *or* with an ST-LINK.
+Allows the badge to be fully reprogrammed with a new binary file using STM32CubeProgrammer over the USB port. Selecting this mode arms the update instead of starting it: after the verification shake, the two end LEDs blink for one minute while the badge waits for a computer. Hold the ON button, then plug the badge into a USB-A port (see USB Programming). When the computer mounts the badge's drive, the badge switches into the bootloader: the drive disappears and the badge goes dark, and it stays dark until it is reprogrammed, so keep holding ON and run STM32CubeProgrammer with `-ob nBOOT0=1` added to reset the DFU bit; otherwise the badge stays stuck in DFU mode. If nothing connects within the minute, the badge powers off and nothing has changed. An ST-LINK can reprogram the badge at any time and does not need this mode.
 User-memory will also be cleared.
 
 
@@ -102,6 +102,7 @@ User-memory will also be cleared.
 Certain modes are protected by a verification step to prevent accidental triggering.
 These modes will display a bar at the bottom the image that slowly shrinks while you shake the badge.
 You must continuously shake the badge until the bar is gone to enable the selected mode.
+USB UPDATE additionally waits for a computer to connect before it acts (see Firmware Update).
 
 
 # Warnings/Notices:
