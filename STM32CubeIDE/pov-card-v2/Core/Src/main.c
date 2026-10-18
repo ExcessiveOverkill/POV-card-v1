@@ -583,6 +583,7 @@ static uint8_t save_metadata = 0;
 	LEVEL_CAL,
 	RESET,
 	USB_DFU,
+	USB_DFU_ARMED,
 	IMAGE_LINE_DISPLAY,
 	POWER_OFF,
 	INITIAL_SETUP_CAL,
@@ -639,6 +640,7 @@ static uint8_t save_metadata = 0;
   memset(brightness, 0, 32);
 
   uint32_t next_increment_tick = 0;
+  uint32_t dfu_arm_until = 0;
 
   BCM_BuildFrame(brightness);
 
@@ -785,7 +787,7 @@ static uint8_t save_metadata = 0;
 
 		if(led_mode != POWER_OFF){	// if we run out of time, prevent usb from keeping card on and draining the battery
 			if(!usb_status_active){
-				if(want_status && led_mode != USB_DFU && led_mode != ERROR_USB){
+				if(want_status && led_mode != USB_DFU && led_mode != USB_DFU_ARMED && led_mode != ERROR_USB){
 					usb_status_active = 1;
 					prev_led_mode = led_mode;
 					memcpy(prev_blank_ccr, blank_ccr, sizeof(blank_ccr));
@@ -999,6 +1001,7 @@ static uint8_t save_metadata = 0;
 
 			  static const uint32_t inactivity_delay = 3e6;	// 3 seconds
 			  static const uint32_t verify_step_delay = 750e3;	// 750ms
+			  static const uint32_t dfu_arm_window = 60000000U;	// 60s for a host to connect once USB update is armed
 			  static uint32_t display_buffer[64];
 			  static uint8_t first_cycle = 1;
 			  static enum Led_Mode next_mode = MODE_POV_DISPLAY_BOTH;
@@ -1133,8 +1136,7 @@ static uint8_t save_metadata = 0;
 				  	  case MODE_USB_DFU:
 				  		  memcpy(letters, "USB", 3);
 				  		  memcpy(letters+12, "UPDATE", 6);
-				  		memcpy(letters+24, "DANGER", 6);
-						  next_mode = USB_DFU;
+						  next_mode = USB_DFU_ARMED;	// arms; USB_DFU_ARMED enters USB_DFU only with a host on the cable
 						  next_blank_ccr = default_blank_ccr;
 						  verify_bar_target = 8;
 					  break;
@@ -1231,6 +1233,7 @@ static uint8_t save_metadata = 0;
 					  verify_bar++;
 					  if(verify_bar > verify_bar_target){
 						  led_mode = next_mode;
+						  if(next_mode == USB_DFU_ARMED) dfu_arm_until = tick + dfu_arm_window;
 						  first_cycle = 1;	// force rebuilding image
 						  memset(brightness, 0, 32);	// off
 						  memcpy(blank_ccr, next_blank_ccr, sizeof(blank_ccr));
@@ -1725,6 +1728,33 @@ static uint8_t save_metadata = 0;
 			  led_mode = POWER_OFF;
 
 			  enter_USB_bootloader();
+		  }
+		  break;
+
+      case USB_DFU_ARMED:
+		  {
+			  /* USB update was selected and verified. The option byte is written
+			     only once a host has enumerated the badge and mounted the drive
+			     (USB_DFU, above), so the badge is never left in DFU without the
+			     cable that gets it back out. No host within the window: power
+			     off, nothing changed. A triple tap still opens the menu. */
+			  static uint32_t blink_tick = 0;
+			  static uint8_t  blink_on = 0;
+
+			  last_active_tick = tick;	// disable the idle power-off (the usage timeout still applies)
+
+			  if(g_usb_connected && g_usb_led_state != 0U){	// bus reset seen and the drive mounted
+				  led_mode = USB_DFU;
+				  break;
+			  }
+			  if(tick > dfu_arm_until){
+				  led_mode = POWER_OFF;
+				  break;
+			  }
+
+			  if(tick > blink_tick){ blink_tick = tick + 500000U; blink_on ^= 1; }
+			  memset(brightness, 0, 32);
+			  if(blink_on){ brightness[0] = 15; brightness[31] = 15; }	// blink both ends to indicate "waiting for a computer"
 		  }
 		  break;
 
